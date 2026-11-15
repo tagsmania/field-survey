@@ -1,6 +1,6 @@
 'use strict';
 /* 제다 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -415,7 +415,7 @@ function renderCard() {
   if (!S.pack || !S.plan.length) {
     card.append(
       h('div', { class: 'info' }, h('div', { class: 'name', style: 'grid-column:1/-1' }, '실사 패키지를 불러오세요'),
-        h('div', { class: 'sub' }, '메인에서 받은 jeddah_survey_pack.json 파일을 고르면 실사 범위와 가볼 지점이 들어옵니다.')),
+        h('div', { class: 'sub' }, '웍스로 받은 실사 패키지 파일(.json)을 고르면 실사 범위와 가볼 지점이 들어옵니다.')),
       h('div', { class: 'row', style: 'grid-template-columns:2fr 1fr' },
         h('button', { class: 'b primary', onclick: pickPack }, '패키지 불러오기'),
         h('button', { class: 'b', onclick: () => openRecord(null, null) }, '＋ 자유 기록')));

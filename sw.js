@@ -1,5 +1,5 @@
 /* 제다 실사 서비스워커 : 앱 셸은 캐시 우선, 지도 타일은 런타임 캐시(상한), data/ 는 캐시하지 않음 */
-const VERSION = 'v0.1.0';
+const VERSION = 'v0.1.1';
 const SHELL = `shell-${VERSION}`;
 const TILES = 'tiles-v1';
 const TILE_MAX = 4000;
