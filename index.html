@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="제다 실사">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css">
+<title>제다 실사</title>
+</head>
+<body>
+<header id="topbar">
+  <div class="title">제다 실사</div>
+  <div id="gpsStat" class="pill" aria-live="polite">GPS 대기</div>
+  <button id="btnTrack" class="pill btn" aria-pressed="false">궤적 꺼짐</button>
+  <button id="btnFollow" class="pill btn" aria-pressed="true">따라가기 켬</button>
+  <button id="btnMenu" class="iconbtn" aria-label="메뉴">☰</button>
+</header>
+
+<div id="map"></div>
+
+<section id="card" aria-label="현재 목적지"></section>
+
+<div id="sheetWrap" hidden>
+  <div id="sheet" role="dialog" aria-modal="true">
+    <div class="sheetHead"><div id="sheetTitle"></div><button id="sheetClose" class="iconbtn" aria-label="닫기">✕</button></div>
+    <div id="sheetBody"></div>
+    <div id="sheetFoot"></div>
+  </div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="updBar" hidden>새 버전이 준비됐습니다 · <button id="updReload" class="linkbtn">다시 열기</button></div>
+
+<input type="file" id="filePick" accept="image/*" multiple hidden>
+<input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
+<input type="file" id="filePack" accept=".json,application/json" hidden>
+
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
