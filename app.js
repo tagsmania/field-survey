@@ -1,6 +1,6 @@
 'use strict';
-/* 제다 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.1.1';
+/* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
+const APP_VERSION = '0.2.0';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -188,13 +188,29 @@ function polyCenter(geom) {
   return [(miny + maxy) / 2, (minx + maxx) / 2];
 }
 function mmdd(s) { if (!s) return ''; const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[2]}/${m[3]}` : String(s); }
+function escH(x) { return String(x ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function renderRange() {
   S.L.range.clearLayers(); S.L.meshLbl.clearLayers();
   const rng = S.pack && S.pack.range; if (!rng) return;
+  const isLine = f => /LineString/.test((f && f.geometry && f.geometry.type) || '');
   L.geoJSON(rng, {
-    style: () => ({ color: '#1f2937', weight: 1, opacity: .7, fillColor: '#4da3ff', fillOpacity: .05 }),
+    style: f => {
+      const p = (f && f.properties) || {};
+      if (isLine(f)) {
+        if (p.kind === 'route') return { color: '#111827', weight: p.leg === '구역 관통' ? 3 : 2, opacity: p.skip ? .3 : .55, dashArray: p.leg === '구역 관통' ? null : '4 6', interactive: false };
+        if (p.kind === 'added') return { color: '#5E3C99', weight: 4, opacity: .85, dashArray: '8 6' };
+        return { color: '#E66101', weight: 6, opacity: p.skip ? .5 : .9 };
+      }
+      return { color: '#1f2937', weight: 1, opacity: .7, fillColor: '#4da3ff', fillOpacity: .05 };
+    },
     onEachFeature: (f, layer) => {
       const p = f.properties || {};
+      if (isLine(f)) {
+        if (p.kind === 'route') return;
+        const meta = [p.priority, p.tier, p.cycle, p.role].filter(Boolean).map(escH).join(' · ');
+        layer.bindPopup(`<b>${escH(p.name)}</b><br>${meta}${p.seq ? `<br>경유 ${escH(p.seq)}번부터 · 예상 ${escH(p.eta || '')}` : ''}${p.skip ? '<br>시간 부족 시 생략 가능' : ''}`);
+        return;
+      }
       layer.bindPopup(`<b>메시 ${p.mesh ?? ''}</b><br>조사 ${p['조사일정'] || '미정'} · 구축 ${p['구축일정'] || '미정'}<br>도로 ${p['전체'] ?? '-'} km (주요 ${p['주요도로'] ?? '-'} · 레지덴셜 ${p['레지덴셜'] ?? '-'})`);
       const lbl = mmdd(p['조사일정']);
       if (lbl) L.marker(polyCenter(f.geometry), { interactive: false, icon: L.divIcon({ className: '', html: `<div class="meshlbl">${lbl}</div>`, iconSize: [40, 14], iconAnchor: [20, 7] }) }).addTo(S.L.meshLbl);
