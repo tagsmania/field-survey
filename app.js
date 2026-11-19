@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.4';
+const APP_VERSION = '0.3.5';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -1087,6 +1087,8 @@ async function boot() {
     else { logVisit('hide'); flushTrack(); }
   });
   window.addEventListener('pagehide', () => { flushTrack(); });
+  const fixSize = () => setTimeout(() => { try { S.map && S.map.invalidateSize(); } catch (e) { } }, 250);
+  window.addEventListener('orientationchange', fixSize); window.addEventListener('resize', fixSize);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').then(reg => {
