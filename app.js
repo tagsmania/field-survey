@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.2';
+const APP_VERSION = '0.3.3';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -417,9 +417,27 @@ function renderTrkBar() {
 }
 
 /* ---------- ★ 표시 ---------- */
+const MARKS = new Map(); const MARK_CANCELED = new Set();
 function drawMark(n, lat, lng, t) {
-  L.circleMarker([lat, lng], { radius: 8, color: '#111', weight: 2, fillColor: '#ffd400', fillOpacity: 1 })
-    .bindTooltip(`★${n} ${hm(t)}`).addTo(S.L.marks);
+  if (MARK_CANCELED.has(n)) return;
+  const m = L.circleMarker([lat, lng], { radius: 9, color: '#111', weight: 2, fillColor: '#ffd400', fillOpacity: 1 })
+    .bindTooltip(`★${n} ${hm(t)}`)
+    .bindPopup(() => h('div', null, h('div', null, h('b', null, `★${n}`), ` · ${hm(t)}`),
+      h('div', { class: 'pbtns' }, h('button', { onclick: () => { S.map.closePopup(); cancelMark(n); } }, '이 표시 취소'))));
+  m.addTo(S.L.marks); MARKS.set(n, m);
+}
+function cancelMark(n, ask = true) {
+  if (n == null || MARK_CANCELED.has(n)) return;
+  if (ask && !confirm(`★${n} 표시를 취소할까요?`)) return;
+  MARK_CANCELED.add(n); logVisit('mark_cancel', { n });
+  const m = MARKS.get(n); if (m) { S.L.marks.removeLayer(m); MARKS.delete(n); }
+  try { navigator.vibrate && navigator.vibrate([40, 40, 40]); } catch (e) { }
+  toast(`★${n} 취소함`);
+}
+function cancelLastMark() {
+  let last = null; for (let k = S.markN; k >= 1; k--) if (!MARK_CANCELED.has(k)) { last = k; break; }
+  if (last == null) return toast('취소할 ★ 가 없습니다');
+  cancelMark(last);
 }
 function doMark() {
   S.markN += 1; const n = S.markN; kvSet('markN', n);
@@ -1032,6 +1050,7 @@ async function boot() {
       for (let i = 1; i < t.pts.length; i++) { const a = t.pts[i - 1], b = t.pts[i]; const d = km({ lat: a[1], lng: a[0] }, { lat: b[1], lng: b[0] }); if (d < 5) S.trackKm += d; }
     }
     const vs = await DB.all('visits');
+    vs.filter(v => v.type === 'mark_cancel').forEach(v => MARK_CANCELED.add(v.n));
     vs.filter(v => v.type === 'mark' && v.lat != null && new Date(v.t).toDateString() === today).forEach(v => drawMark(v.n, v.lat, v.lng, v.t));
   } catch (e) { console.warn('today', e); }
   startGPS();
@@ -1041,7 +1060,11 @@ async function boot() {
     toast(`궤적 자동 재개 · 끊긴 시간 약 ${fmtGap(gap)}`, 6000);
   }
   $('#trkBar').onclick = () => { if (!S.tracking) toggleTrack(); };
-  $('#btnMark').onclick = doMark;
+  { const b = $('#btnMark'); let lp = null, fired = false;
+    b.addEventListener('pointerdown', () => { fired = false; clearTimeout(lp); lp = setTimeout(() => { fired = true; cancelLastMark(); }, 700); });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => clearTimeout(lp)));
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.onclick = () => { if (fired) { fired = false; return; } doMark(); }; }
   document.addEventListener('pointerdown', () => { try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); AC.resume(); } catch (e) { } }, { once: true });
   setInterval(renderTrkBar, 1000); renderTrkBar();
   $('#btnFollow').onclick = () => setFollow(!S.follow);
