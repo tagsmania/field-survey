@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.3.1';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -153,6 +153,21 @@ async function installPack(pack, quiet) {
   renderRange(); renderPlan(); renderCard(); updateAppLinks();
   if (pack.range) { try { S.map.fitBounds(S.L.range.getBounds(), { padding: [10, 10] }); } catch (e) { } }
   if (!quiet) { await setDayFilter(autoDay()); toast(`「${pack.name}」 불러옴 · 지점 ${pack.plan.length}곳`); }
+}
+function stripBom(s) { return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s; }
+async function readPackFile(f) {
+  const buf = await (f.arrayBuffer ? f.arrayBuffer() : new Response(f).arrayBuffer());
+  const u8 = new Uint8Array(buf);
+  if (!u8.length) throw new Error('빈 파일입니다. 원본을 다시 받아 주세요');
+  if (u8[0] === 0x50 && u8[1] === 0x4b) {
+    const zip = await JSZip.loadAsync(buf);
+    const ent = Object.values(zip.files).find(z => !z.dir && /\.json$/i.test(z.name) && !/^__MACOSX/.test(z.name));
+    if (!ent) throw new Error('ZIP 안에 .json 파일이 없습니다');
+    return JSON.parse(stripBom(await ent.async('string')).trim());
+  }
+  const txt = stripBom(new TextDecoder('utf-8').decode(u8)).trim();
+  if (txt.startsWith('<')) throw new Error('패키지가 아니라 웹페이지(미리보기 화면)가 저장됐습니다. 파일 원본을 다시 받아 주세요');
+  try { return JSON.parse(txt); } catch (e) { throw new Error(`JSON 형식이 아닙니다 (앞부분 : ${txt.slice(0, 30).replace(/\s+/g, ' ')})`); }
 }
 function pickPack() { $('#filePack').value = ''; $('#filePack').click(); }
 
@@ -1009,7 +1024,11 @@ async function boot() {
   $('#sheetWrap').addEventListener('click', e => { if (e.target.id === 'sheetWrap') closeSheet(); });
   $('#filePack').onchange = async () => {
     const f = $('#filePack').files[0]; if (!f) return;
-    try { const obj = JSON.parse(await f.text()); await installPack(parsePack(obj)); } catch (e) { toast(`패키지를 못 읽었습니다 : ${e.message}`, 4000); }
+    try { await installPack(parsePack(await readPackFile(f))); }
+    catch (e) {
+      toast(`패키지를 못 읽었습니다 : ${e.message} (${f.name || '이름 없음'}, ${Math.round((f.size || 0) / 1024)} KB)`, 9000);
+      logVisit('pack_error', { name: f.name, size: f.size, type: f.type, msg: String(e.message).slice(0, 200) });
+    }
   };
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') { logVisit('show'); if (S.tracking) requestWake(); renderTrkBar(); }
