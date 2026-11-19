@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.3.2';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -69,9 +69,10 @@ function fmtKm(d) { return d == null ? '' : (d < 1 ? `${Math.round(d * 1000)} m`
 
 /* ---------- IndexedDB ---------- */
 const DB = {
-  db: null,
+  db: null, opening: null,
   open() {
-    return new Promise((res, rej) => {
+    if (DB.opening) return DB.opening;
+    DB.opening = new Promise((res, rej) => {
       const r = indexedDB.open('jeddah-survey', 1);
       r.onupgradeneeded = () => {
         const d = r.result;
@@ -81,22 +82,48 @@ const DB = {
         d.createObjectStore('visits', { keyPath: 'id', autoIncrement: true });
         d.createObjectStore('tracks', { keyPath: 'id' });
       };
-      r.onsuccess = () => { DB.db = r.result; res(); };
-      r.onerror = () => rej(r.error);
+      r.onsuccess = () => {
+        const d = r.result;
+        d.onclose = () => { if (DB.db === d) DB.db = null; };
+        d.onversionchange = () => { try { d.close(); } catch (e) { } if (DB.db === d) DB.db = null; };
+        DB.db = d; DB.opening = null; res(d);
+      };
+      r.onerror = () => { DB.opening = null; rej(r.error); };
+      r.onblocked = () => console.warn('idb blocked');
     });
+    return DB.opening;
   },
   done(t) { return new Promise((res, rej) => { t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error || new Error('abort')); }); },
   req(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
-  get(store, key) { return DB.req(DB.db.transaction(store).objectStore(store).get(key)); },
-  all(store) { return DB.req(DB.db.transaction(store).objectStore(store).getAll()); },
-  async put(store, val, key) {
-    const t = DB.db.transaction(store, 'readwrite'); const s = t.objectStore(store);
-    const r = key === undefined ? s.put(val) : s.put(val, key); await DB.done(t); return r.result;
+  // 아이폰 Safari 는 백그라운드(파일 고르기 · 화면 잠금)에서 연결을 닫음 → 닫혔으면 다시 열고 재시도
+  async run(stores, mode, fn) {
+    let last;
+    for (let i = 0; i < 3; i++) {
+      try {
+        if (!DB.db) await DB.open();
+        const t = DB.db.transaction(stores, mode);
+        const r = fn(t);
+        if (mode === 'readwrite') { await DB.done(t); return r && r.result; }
+        return await DB.req(r);
+      } catch (e) {
+        last = e;
+        const msg = `${e && e.name} ${e && e.message}`;
+        if (/closing|closed|InvalidState|connection|abort|UnknownError/i.test(msg)) {
+          try { if (DB.db) DB.db.close(); } catch (x) { }
+          DB.db = null; await new Promise(r => setTimeout(r, 120 * (i + 1))); continue;
+        }
+        throw e;
+      }
+    }
+    throw last;
   },
-  async putMany(store, vals) { const t = DB.db.transaction(store, 'readwrite'); const s = t.objectStore(store); vals.forEach(v => s.put(v)); await DB.done(t); },
-  async del(store, key) { const t = DB.db.transaction(store, 'readwrite'); t.objectStore(store).delete(key); await DB.done(t); },
-  async clearAll() { const names = ['kv', 'records', 'media', 'visits', 'tracks']; const t = DB.db.transaction(names, 'readwrite'); names.forEach(n => t.objectStore(n).clear()); await DB.done(t); },
-  async count(store) { return DB.req(DB.db.transaction(store).objectStore(store).count()); },
+  get(store, key) { return DB.run(store, 'readonly', t => t.objectStore(store).get(key)); },
+  all(store) { return DB.run(store, 'readonly', t => t.objectStore(store).getAll()); },
+  put(store, val, key) { return DB.run(store, 'readwrite', t => { const s = t.objectStore(store); return key === undefined ? s.put(val) : s.put(val, key); }); },
+  putMany(store, vals) { return DB.run(store, 'readwrite', t => { const s = t.objectStore(store); vals.forEach(v => s.put(v)); }); },
+  del(store, key) { return DB.run(store, 'readwrite', t => { t.objectStore(store).delete(key); }); },
+  clearAll() { const names = ['kv', 'records', 'media', 'visits', 'tracks']; return DB.run(names, 'readwrite', t => { names.forEach(n => t.objectStore(n).clear()); }); },
+  count(store) { return DB.run(store, 'readonly', t => t.objectStore(store).count()); },
 };
 const kvGet = k => DB.get('kv', k);
 const kvSet = (k, v) => DB.put('kv', v, k);
