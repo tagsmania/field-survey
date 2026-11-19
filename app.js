@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -106,6 +106,7 @@ const S = {
   settings: { ...DEFAULT_SETTINGS }, pack: null, plan: [], planBySeq: new Map(), status: {}, currentSeq: null,
   records: [], gps: null, follow: true, tracking: false, track: null, wakeLock: null, deviceId: null,
   lastExportAt: null, opened: {}, map: null, L: {}, lastZip: null, dayFilter: null,
+  lastFixAt: null, trackKm: 0, trackLastSave: 0, markN: 0,
 };
 
 /* ---------- toast ---------- */
@@ -134,7 +135,8 @@ function parsePack(obj) {
     const p = f.properties || {}; const [lng, lat] = f.geometry.coordinates;
     if (p.seq == null || !isFinite(lat) || !isFinite(lng)) continue;
     plan.push({ seq: Number(p.seq), name: String(p.name || `지점 ${p.seq}`), cat: p.cat || '', cats: p.cats || '', reason: p.reason || '',
-      priority: p.priority || '', mesh: p.mesh || '', day: p.day || '', fc: p.fc ?? '', survey: p.survey || '', build: p.build || '', lat: +lat, lng: +lng });
+      priority: p.priority || '', mesh: p.mesh || '', day: p.day || '', fc: p.fc ?? '', survey: p.survey || '', build: p.build || '', lat: +lat, lng: +lng,
+      kind: p.kind || '', eta: p.eta || '' });
   }
   plan.sort((a, b) => a.seq - b.seq);
   return { version: String(obj.version ?? ''), name: obj.name || '실사 패키지', created: obj.created || '', range, plan, loadedAt: nowIso() };
@@ -165,7 +167,9 @@ function initMap() {
   (S.L.base[S.settings.basemap] || S.L.base.osm).addTo(map);
   S.L.range = L.featureGroup().addTo(map);
   S.L.meshLbl = L.layerGroup();
+  S.L.trackOld = L.layerGroup().addTo(map);
   S.L.track = L.polyline([], { color: '#ff3b30', weight: 4, opacity: .85, dashArray: '8 6' }).addTo(map);
+  S.L.marks = L.layerGroup().addTo(map);
   S.L.plan = L.layerGroup().addTo(map);
   S.L.rec = L.layerGroup().addTo(map);
   let lastTier = null;
@@ -220,7 +224,7 @@ function renderRange() {
 function zoomTier() { const z = S.map ? S.map.getZoom() : 13; return z >= 14 ? 2 : (z >= 12 ? 1 : 0); }
 function planIcon(p) {
   const st = S.status[p.seq] || {}; const cur = p.seq === S.currentSeq;
-  const cls = cur ? 'cur' : (st.visited ? 'done' : (st.skipped ? 'skip' : ''));
+  const cls = (cur ? 'cur' : (st.visited ? 'done' : (st.skipped ? 'skip' : ''))) + (p.kind === 'pass' ? ' pass' : '');
   const tier = zoomTier();
   if (!cur && tier === 0) return L.divIcon({ className: '', html: `<div class="pdot ${cls}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] });
   if (!cur && tier === 1) return L.divIcon({ className: '', html: `<div class="pm sm ${cls}">${p.seq}</div>`, iconSize: [28, 18], iconAnchor: [14, 9] });
@@ -238,7 +242,7 @@ function planPopup(p) {
   const st = S.status[p.seq] || {};
   const box = h('div', null,
     h('div', null, h('b', null, `P${pad(p.seq, 3)} ${p.name}`)),
-    h('div', null, [p.day, p.cat, p.priority && `우선 ${p.priority}`, p.fc !== '' && `FC${p.fc}`].filter(Boolean).join(' · ')),
+    h('div', null, [p.day, p.kind === 'pass' ? '통과' : (p.kind === 'stop' ? '정차' : ''), p.eta && `예정 ${p.eta}`, p.cat, p.priority && `우선 ${p.priority}`, p.fc !== '' && `FC${p.fc}`].filter(Boolean).join(' · ')),
     (p.survey || p.build) ? h('div', { class: 'muted' }, `N1 조사 ${mmdd(p.survey) || '-'} · 구축 ${mmdd(p.build) || '-'} · 메시 ${p.mesh}`) : null,
     p.reason ? h('div', null, p.reason) : null,
     h('div', { class: 'muted' }, st.visited ? `방문 ${hm(st.visitedAt)}` : (st.skipped ? '건너뜀' : '미방문')),
@@ -271,7 +275,7 @@ function startGPS() {
 function demoGps() { onPos({ coords: { latitude: 21.5433, longitude: 39.1728, accuracy: 12 }, timestamp: Date.now(), demo: true }); }
 function onPos(pos) {
   const c = pos.coords;
-  S.gps = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, t: pos.timestamp };
+  S.gps = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, t: pos.timestamp }; S.lastFixAt = Date.now();
   $('#gpsStat').textContent = `GPS ±${Math.round(c.accuracy)}m${pos.demo ? ' (데모)' : ''}`;
   const ll = [c.latitude, c.longitude];
   if (!meMarker) {
@@ -280,7 +284,7 @@ function onPos(pos) {
   } else { meMarker.setLatLng(ll); meCircle.setLatLng(ll).setRadius(c.accuracy); }
   if (S.follow) S.map.panTo(ll, { animate: true });
   if (S.tracking) addTrackPoint(c.latitude, c.longitude, pos.timestamp);
-  updateCardDistance(); updateAppLinks();
+  updateCardDistance(); updateAppLinks(); checkArrive();
 }
 function setFollow(on) {
   S.follow = on; const b = $('#btnFollow'); b.setAttribute('aria-pressed', on); b.textContent = on ? '따라가기 켬' : '따라가기 끔';
@@ -289,25 +293,118 @@ function setFollow(on) {
 async function requestWake() {
   try { if ('wakeLock' in navigator && S.tracking) S.wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { console.warn('wakeLock', e); }
 }
-async function toggleTrack() {
-  if (!S.tracking) {
-    S.tracking = true; S.track = { id: uid('t_'), startedAt: nowIso(), endedAt: null, pts: [] };
-    S.L.track.setLatLngs([]); await requestWake(); toast('주행 궤적 기록 시작 · 화면을 켜 두세요');
-  } else {
-    S.tracking = false; S.track.endedAt = nowIso();
-    if (S.track.pts.length) await DB.put('tracks', S.track);
-    try { if (S.wakeLock) await S.wakeLock.release(); } catch (e) { }
-    S.wakeLock = null; toast(`궤적 저장 · ${S.track.pts.length}점`);
-  }
+async function startTrack(resumeGapMs) {
+  S.tracking = true; S.track = { id: uid('t_'), startedAt: nowIso(), endedAt: null, pts: [], resumed: resumeGapMs != null };
+  S.trackLastSave = Date.now(); S.L.track.setLatLngs([]);
+  if (S.gps && S.lastFixAt && Date.now() - S.lastFixAt < 30000) addTrackPoint(S.gps.lat, S.gps.lng, Date.now());
+  await kvSet('trackOn', true); await requestWake(); updateTrackBtn(); renderTrkBar();
+}
+async function flushTrack() {
+  if (!S.track || !S.track.pts.length) return;
+  S.trackLastSave = Date.now();
+  try { await DB.put('tracks', S.track); await kvSet('trackLastAt', Date.now()); } catch (e) { console.warn('flush', e); }
+}
+async function stopTrack() {
+  S.tracking = false; if (S.track) { S.track.endedAt = nowIso(); await flushTrack(); }
+  await kvSet('trackOn', false);
+  try { if (S.wakeLock) await S.wakeLock.release(); } catch (e) { }
+  S.wakeLock = null; toast(`궤적 저장 · ${S.track ? S.track.pts.length : 0}점`);
+  if (S.track && S.track.pts.length) L.polyline(S.track.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+  S.track = null; S.L.track.setLatLngs([]); updateTrackBtn(); renderTrkBar();
+}
+function updateTrackBtn() {
   const b = $('#btnTrack'); b.setAttribute('aria-pressed', S.tracking); b.textContent = S.tracking ? '● 궤적 기록 중' : '궤적 꺼짐';
+}
+async function toggleTrack() {
+  if (!S.tracking) { await startTrack(); toast('주행 궤적 기록 시작 · 화면을 켜 두세요'); logVisit('track_start'); }
+  else { if (!confirm('궤적 기록을 멈출까요?')) return; await stopTrack(); logVisit('track_stop'); }
+}
+async function rotateTrack() {
+  // 한 토막이 너무 커지지 않게 2,000점마다 새 토막으로 (저장 부담 줄임)
+  const old = S.track; old.endedAt = nowIso(); await DB.put('tracks', old).catch(() => { });
+  L.polyline(old.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+  const last = old.pts[old.pts.length - 1];
+  S.track = { id: uid('t_'), startedAt: nowIso(), endedAt: null, pts: [last], resumed: false, cont: old.id };
+  S.L.track.setLatLngs([[last[1], last[0]]]);
 }
 function addTrackPoint(lat, lng, ts) {
   const t = S.track; if (!t) return;
   const last = t.pts[t.pts.length - 1];
-  if (last) { const d = km({ lat: last[1], lng: last[0] }, { lat, lng }) * 1000; if (d < 12 && ts - last[3] < 10000) return; }
+  if (last) {
+    const d = km({ lat: last[1], lng: last[0] }, { lat, lng }) * 1000;
+    if (d < 12 && ts - last[3] < 10000) return;
+    if (d < 5000) S.trackKm += d / 1000;
+  }
   t.pts.push([+lng.toFixed(6), +lat.toFixed(6), new Date(ts).toISOString(), ts]);
   S.L.track.addLatLng([lat, lng]);
-  if (t.pts.length % 15 === 0) DB.put('tracks', t).catch(() => { });
+  if (t.pts.length >= 2000) { rotateTrack(); return; }
+  if (Date.now() - S.trackLastSave > 15000) flushTrack();
+}
+
+/* ---------- 상태줄 · 경고 ---------- */
+let AC = null, staleAlertAt = 0, pokeAt = 0;
+function beep() {
+  try {
+    AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume();
+    const o = AC.createOscillator(), g = AC.createGain(); o.frequency.value = 880; g.gain.value = .25;
+    o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime + .4);
+  } catch (e) { }
+}
+function fmtAgo(ms) { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}초 전` : `${Math.floor(s / 60)}분 ${s % 60}초 전`; }
+function fmtGap(ms) { const m = Math.round(ms / 60000); return m < 1 ? '1분 미만' : (m < 60 ? `${m}분` : `${Math.floor(m / 60)}시간 ${m % 60}분`); }
+function renderTrkBar() {
+  const el = $('#trkBar'); if (!el) return;
+  const now = Date.now();
+  if (!S.tracking) { el.className = 'off'; el.textContent = '○ 궤적 꺼짐 · 여기를 눌러 기록 시작'; return; }
+  const age = S.lastFixAt ? now - S.lastFixAt : null;
+  if (age == null || age > 20000) {
+    if (now - pokeAt > 15000 && 'geolocation' in navigator) {
+      pokeAt = now;
+      navigator.geolocation.getCurrentPosition(onPos, () => { }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+    }
+  }
+  const n = S.track ? S.track.pts.length : 0;
+  if (age == null || age > 45000) {
+    el.className = 'stale';
+    el.textContent = `⚠ 궤적 끊김 · 마지막 위치 ${age == null ? '없음' : fmtAgo(age)} · 화면 켜기 · 위치 권한 확인`;
+    if (now - staleAlertAt > 30000) { staleAlertAt = now; try { navigator.vibrate && navigator.vibrate([400, 150, 400]); } catch (e) { } beep(); }
+  } else {
+    el.className = 'on';
+    el.textContent = `● 기록 중 · ${n.toLocaleString()}점 · ${fmtAgo(age)} · ±${Math.round(S.gps.acc)} m · 오늘 ${S.trackKm.toFixed(1)} km`;
+  }
+}
+
+/* ---------- ★ 표시 ---------- */
+function drawMark(n, lat, lng, t) {
+  L.circleMarker([lat, lng], { radius: 8, color: '#111', weight: 2, fillColor: '#ffd400', fillOpacity: 1 })
+    .bindTooltip(`★${n} ${hm(t)}`).addTo(S.L.marks);
+}
+function doMark() {
+  S.markN += 1; const n = S.markN; kvSet('markN', n);
+  logVisit('mark', { n, near: S.currentSeq });
+  try { navigator.vibrate && navigator.vibrate(90); } catch (e) { }
+  if (S.gps) drawMark(n, S.gps.lat, S.gps.lng, nowIso());
+  $('#btnMark').textContent = `★${n}`;
+  toast(`★${n} 표시 · ${hm(nowIso())}${S.gps ? '' : ' · 위치 없음'} · 말로 이유를 남겨 주세요`);
+}
+
+/* ---------- 도착 · 통과 자동 판정 ---------- */
+function checkArrive() {
+  const p = S.planBySeq.get(S.currentSeq); if (!p || !S.gps || S.gps.acc > 80) return;
+  const st = S.status[p.seq] || {}; const d = km(S.gps, p) * 1000;
+  if (p.kind === 'pass') {
+    if (d <= 150 && !st.visited) {
+      setStatus(p.seq, { visited: true, visitedAt: nowIso(), auto: true }); logVisit('pass', { seq: p.seq, dist: Math.round(d) });
+      try { navigator.vibrate && navigator.vibrate([60, 60, 60]); } catch (e) { }
+      const nx = nextOpenSeq(p.seq);
+      if (nx != null) { setCurrent(nx, 'auto'); toast(`통과 P${pad(p.seq, 3)} ✓ → 다음 P${pad(nx, 3)} · 길안내 앱 버튼을 눌러 목적지를 바꾸세요`, 4500); }
+      else { renderPlan(); renderCard(); }
+    }
+  } else if (d <= 80 && !st.arrivedAt) {
+    setStatus(p.seq, { arrivedAt: nowIso() }); logVisit('arrive', { seq: p.seq, dist: Math.round(d) });
+    try { navigator.vibrate && navigator.vibrate(200); } catch (e) { }
+    toast(`도착 P${pad(p.seq, 3)} · 사진 · 캡처 · 말로 이유 남기고 「다음 ▶」`, 4500); renderCard();
+  }
 }
 
 /* ---------- deep links ---------- */
@@ -459,10 +556,18 @@ function renderCard() {
       h('button', { class: 'b', onclick: openList }, '목록')));
   renderAppRow();
 }
+function etaLag(p) {
+  if (!p.eta) return '';
+  const d = new Date(); const tag = `${d.getMonth() + 1}/${d.getDate()}`;
+  if (!p.day || !p.day.startsWith(tag)) return `예정 ${p.eta}`;
+  const [H, M] = p.eta.split(':').map(Number); const diff = (d.getHours() * 60 + d.getMinutes()) - (H * 60 + M);
+  return `예정 ${p.eta} (${diff > 5 ? `${diff}분 늦음` : (diff < -5 ? `${-diff}분 빠름` : '제시간')})`;
+}
 function subLine(p, st, done, recN) {
   const d = S.gps ? fmtKm(km(S.gps, p)) : '거리 ?';
-  const state = st.visited ? `방문 ${hm(st.visitedAt)}` : (st.skipped ? '건너뜀' : '미방문');
-  return `${p.day ? p.day + ' · ' : ''}${p.cat || '기준 없음'} · 직선 ${d} · ${state} · 진행 ${done}/${vis().length} · 기록 ${recN}`;
+  const state = st.visited ? `${st.auto ? '통과' : '방문'} ${hm(st.visitedAt)}` : (st.skipped ? '건너뜀' : (st.arrivedAt ? `도착 ${hm(st.arrivedAt)}` : '미방문'));
+  const kind = p.kind === 'pass' ? '통과 지점' : (p.kind === 'stop' ? '정차 지점' : '');
+  return [p.day, kind, etaLag(p), `직선 ${d}`, state, `진행 ${done}/${vis().length}`].filter(Boolean).join(' · ') + (recN ? ` · 기록 ${recN}` : '');
 }
 function updateCardDistance() {
   const el = $('#cardSub'); const p = S.planBySeq.get(S.currentSeq); if (!el || !p) return;
@@ -875,8 +980,28 @@ async function boot() {
   const pack = await kvGet('pack');
   if (pack) { await installPack(pack, true); if (!S.dayFilter) await setDayFilter(autoDay()); } else renderCard();
   renderRecords();
-  if (S.currentSeq != null) logVisit('boot', { seq: S.currentSeq });
+  if (S.currentSeq != null) logVisit('boot', { seq: S.currentSeq }); else logVisit('boot');
+  S.markN = (await kvGet('markN')) || 0; $('#btnMark').textContent = S.markN ? `★${S.markN}` : '★';
+  try {
+    const today = new Date().toDateString();
+    const old = (await DB.all('tracks')).filter(t => t.pts && t.pts.length && new Date(t.startedAt).toDateString() === today);
+    for (const t of old) {
+      L.polyline(t.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+      for (let i = 1; i < t.pts.length; i++) { const a = t.pts[i - 1], b = t.pts[i]; const d = km({ lat: a[1], lng: a[0] }, { lat: b[1], lng: b[0] }); if (d < 5) S.trackKm += d; }
+    }
+    const vs = await DB.all('visits');
+    vs.filter(v => v.type === 'mark' && v.lat != null && new Date(v.t).toDateString() === today).forEach(v => drawMark(v.n, v.lat, v.lng, v.t));
+  } catch (e) { console.warn('today', e); }
   startGPS();
+  if (await kvGet('trackOn')) {
+    const lastAt = await kvGet('trackLastAt'); const gap = lastAt ? Date.now() - lastAt : 0;
+    await startTrack(gap); logVisit('track_resume', { gapSec: Math.round(gap / 1000) });
+    toast(`궤적 자동 재개 · 끊긴 시간 약 ${fmtGap(gap)}`, 6000);
+  }
+  $('#trkBar').onclick = () => { if (!S.tracking) toggleTrack(); };
+  $('#btnMark').onclick = doMark;
+  document.addEventListener('pointerdown', () => { try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); AC.resume(); } catch (e) { } }, { once: true });
+  setInterval(renderTrkBar, 1000); renderTrkBar();
   $('#btnFollow').onclick = () => setFollow(!S.follow);
   $('#btnTrack').onclick = toggleTrack;
   $('#btnMenu').onclick = openMenu;
@@ -886,7 +1011,11 @@ async function boot() {
     const f = $('#filePack').files[0]; if (!f) return;
     try { const obj = JSON.parse(await f.text()); await installPack(parsePack(obj)); } catch (e) { toast(`패키지를 못 읽었습니다 : ${e.message}`, 4000); }
   };
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.tracking) requestWake(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { logVisit('show'); if (S.tracking) requestWake(); renderTrkBar(); }
+    else { logVisit('hide'); flushTrack(); }
+  });
+  window.addEventListener('pagehide', () => { flushTrack(); });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').then(reg => {
