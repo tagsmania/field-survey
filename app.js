@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.3';
+const APP_VERSION = '0.3.4';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -417,26 +417,27 @@ function renderTrkBar() {
 }
 
 /* ---------- ★ 표시 ---------- */
-const MARKS = new Map(); const MARK_CANCELED = new Set();
+const MARKS = new Map(); const MARK_CANCELED = new Set(); const MARKS_TODAY = new Set();
+function markLabel() { const b = $('#btnMark'); if (b) b.textContent = MARKS_TODAY.size ? `★${MARKS_TODAY.size}` : '★'; }
 function drawMark(n, lat, lng, t) {
   if (MARK_CANCELED.has(n)) return;
   const m = L.circleMarker([lat, lng], { radius: 9, color: '#111', weight: 2, fillColor: '#ffd400', fillOpacity: 1 })
-    .bindTooltip(`★${n} ${hm(t)}`)
-    .bindPopup(() => h('div', null, h('div', null, h('b', null, `★${n}`), ` · ${hm(t)}`),
+    .bindTooltip(`★ #${n} ${hm(t)}`)
+    .bindPopup(() => h('div', null, h('div', null, h('b', null, `★ #${n}`), ` · ${hm(t)}`),
       h('div', { class: 'pbtns' }, h('button', { onclick: () => { S.map.closePopup(); cancelMark(n); } }, '이 표시 취소'))));
   m.addTo(S.L.marks); MARKS.set(n, m);
 }
 function cancelMark(n, ask = true) {
   if (n == null || MARK_CANCELED.has(n)) return;
-  if (ask && !confirm(`★${n} 표시를 취소할까요?`)) return;
-  MARK_CANCELED.add(n); logVisit('mark_cancel', { n });
+  if (ask && !confirm(`이 ★ 표시(#${n})를 취소할까요?`)) return;
+  MARK_CANCELED.add(n); MARKS_TODAY.delete(n); markLabel(); logVisit('mark_cancel', { n });
   const m = MARKS.get(n); if (m) { S.L.marks.removeLayer(m); MARKS.delete(n); }
   try { navigator.vibrate && navigator.vibrate([40, 40, 40]); } catch (e) { }
-  toast(`★${n} 취소함`);
+  toast(`★ 표시 취소함 (오늘 ${MARKS_TODAY.size}개 남음)`);
 }
 function cancelLastMark() {
-  let last = null; for (let k = S.markN; k >= 1; k--) if (!MARK_CANCELED.has(k)) { last = k; break; }
-  if (last == null) return toast('취소할 ★ 가 없습니다');
+  const last = MARKS_TODAY.size ? Math.max(...MARKS_TODAY) : null;
+  if (last == null) return toast('오늘 취소할 ★ 가 없습니다');
   cancelMark(last);
 }
 function doMark() {
@@ -444,8 +445,8 @@ function doMark() {
   logVisit('mark', { n, near: S.currentSeq });
   try { navigator.vibrate && navigator.vibrate(90); } catch (e) { }
   if (S.gps) drawMark(n, S.gps.lat, S.gps.lng, nowIso());
-  $('#btnMark').textContent = `★${n}`;
-  toast(`★${n} 표시 · ${hm(nowIso())}${S.gps ? '' : ' · 위치 없음'} · 말로 이유를 남겨 주세요`);
+  MARKS_TODAY.add(n); markLabel();
+  toast(`★ 표시 (오늘 ${MARKS_TODAY.size}개) · ${hm(nowIso())}${S.gps ? '' : ' · 위치 없음'} · 말로 이유를 남겨 주세요`);
 }
 
 /* ---------- 도착 · 통과 자동 판정 ---------- */
@@ -588,7 +589,7 @@ function renderCard() {
   if (!S.pack || !S.plan.length) {
     card.append(
       h('div', { class: 'info' }, h('div', { class: 'name', style: 'grid-column:1/-1' }, '실사 패키지를 불러오세요'),
-        h('div', { class: 'sub' }, '웍스로 받은 실사 패키지 파일(.json)을 고르면 실사 범위와 가볼 지점이 들어옵니다.')),
+        h('div', { class: 'sub' }, '웍스로 받은 실사 패키지 파일(.zip 또는 .json)을 고르면 실사 범위와 가볼 지점이 들어옵니다.')),
       h('div', { class: 'row', style: 'grid-template-columns:2fr 1fr' },
         h('button', { class: 'b primary', onclick: pickPack }, '패키지 불러오기'),
         h('button', { class: 'b', onclick: () => openRecord(null, null) }, '＋ 자유 기록')));
@@ -1041,7 +1042,7 @@ async function boot() {
   if (pack) { await installPack(pack, true); if (!S.dayFilter) await setDayFilter(autoDay()); } else renderCard();
   renderRecords();
   if (S.currentSeq != null) logVisit('boot', { seq: S.currentSeq }); else logVisit('boot');
-  S.markN = (await kvGet('markN')) || 0; $('#btnMark').textContent = S.markN ? `★${S.markN}` : '★';
+  S.markN = (await kvGet('markN')) || 0;
   try {
     const today = new Date().toDateString();
     const old = (await DB.all('tracks')).filter(t => t.pts && t.pts.length && new Date(t.startedAt).toDateString() === today);
@@ -1051,8 +1052,9 @@ async function boot() {
     }
     const vs = await DB.all('visits');
     vs.filter(v => v.type === 'mark_cancel').forEach(v => MARK_CANCELED.add(v.n));
-    vs.filter(v => v.type === 'mark' && v.lat != null && new Date(v.t).toDateString() === today).forEach(v => drawMark(v.n, v.lat, v.lng, v.t));
+    vs.filter(v => v.type === 'mark' && new Date(v.t).toDateString() === today && !MARK_CANCELED.has(v.n)).forEach(v => { MARKS_TODAY.add(v.n); if (v.lat != null) drawMark(v.n, v.lat, v.lng, v.t); });
   } catch (e) { console.warn('today', e); }
+  markLabel();
   startGPS();
   if (await kvGet('trackOn')) {
     const lastAt = await kvGet('trackLastAt'); const gap = lastAt ? Date.now() - lastAt : 0;
