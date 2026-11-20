@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.5';
+const APP_VERSION = '0.3.6';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -531,11 +531,11 @@ async function copyText(t) {
 function days() { return [...new Set(S.plan.map(p => p.day).filter(Boolean))]; }
 function vis() { return S.dayFilter && S.dayFilter !== 'all' ? S.plan.filter(p => p.day === S.dayFilter) : S.plan; }
 function idxOf(seq, L = vis()) { return L.findIndex(p => p.seq === seq); }
+// 다음 = 번호 순서로 한 칸 (방문 여부와 상관없음, v0.3.6)
 function nextOpenSeq(fromSeq) {
   const L = vis(); const i = idxOf(fromSeq, L);
-  for (let j = i + 1; j < L.length; j++) { const st = S.status[L[j].seq] || {}; if (!st.visited && !st.skipped) return L[j].seq; }
-  for (let j = 0; j < (i < 0 ? L.length : i); j++) { const st = S.status[L[j].seq] || {}; if (!st.visited && !st.skipped) return L[j].seq; }
-  return null;
+  if (i < 0) return L.length ? L[0].seq : null;
+  return i + 1 < L.length ? L[i + 1].seq : null;
 }
 function autoDay() {
   const d = new Date(); const tag = `${d.getMonth() + 1}/${d.getDate()}`;
@@ -569,10 +569,13 @@ function autoOpenRole() {
 }
 function doNext(skip) {
   if (!S.plan.length) return pickPack();
-  const cur = S.currentSeq;
-  if (cur != null) setStatus(cur, skip ? { skipped: true, skippedAt: nowIso() } : { visited: true, visitedAt: nowIso() });
+  const cur = S.currentSeq; const cp = S.planBySeq.get(cur);
+  if (cur != null && cp) {
+    if (skip) setStatus(cur, { skipped: true, skippedAt: nowIso() });
+    else if ((S.gps && km(S.gps, cp) * 1000 <= 300) || (S.status[cur] || {}).arrivedAt) setStatus(cur, { visited: true, visitedAt: nowIso() });
+  }
   const nx = nextOpenSeq(cur);
-  if (nx == null) { renderPlan(); renderCard(); toast('남은 지점이 없습니다'); return; }
+  if (nx == null) { renderPlan(); renderCard(); toast('이 일자의 마지막 지점입니다'); return; }
   setCurrent(nx, skip ? 'skip' : 'next');
   autoOpenRole();
 }
@@ -1039,7 +1042,23 @@ async function boot() {
   S.records = await DB.all('records');
   initMap();
   const pack = await kvGet('pack');
-  if (pack) { await installPack(pack, true); if (!S.dayFilter) await setDayFilter(autoDay()); } else renderCard();
+  if (pack) {
+    await installPack(pack, true);
+    const today = autoDay(); const todayStr = new Date().toDateString();
+    if (today !== 'all' && (await kvGet('lastDayRun')) !== todayStr) {
+      // 새 날 첫 실행 : 오늘 일자로 전환, 오늘 지점에 다른 날 잘못 찍힌 방문 · 건너뜀 표시 지움
+      let cleared = 0;
+      for (const p of S.plan.filter(p => p.day === today)) {
+        const st = S.status[p.seq]; const t = st && (st.visitedAt || st.skippedAt || st.arrivedAt);
+        if (t && new Date(t).toDateString() !== todayStr) { delete S.status[p.seq]; cleared++; }
+      }
+      await kvSet('status', S.status); await kvSet('lastDayRun', todayStr);
+      await setDayFilter(today);
+      const first = S.plan.find(p => p.day === today); if (first) setCurrent(first.seq, 'day');
+      logVisit('day_start', { day: today, cleared });
+      toast(`오늘 ${today} 지점으로 바꿨습니다${cleared ? ` · 잘못 찍힌 방문 ${cleared}개 지움` : ''}`, 6000);
+    } else if (!S.dayFilter) await setDayFilter(today);
+  } else renderCard();
   renderRecords();
   if (S.currentSeq != null) logVisit('boot', { seq: S.currentSeq }); else logVisit('boot');
   S.markN = (await kvGet('markN')) || 0;
