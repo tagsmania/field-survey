@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.8';
+const APP_VERSION = '0.3.9';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -581,6 +581,7 @@ function daySelect() {
 }
 function setStatus(seq, patch) { S.status[seq] = { ...(S.status[seq] || {}), ...patch }; kvSet('status', S.status); }
 function setCurrent(seq, type) {
+  if (['next', 'prev', 'skip', 'auto'].includes(type)) S.navGuardUntil = Date.now() + 800;
   S.currentSeq = seq; S.opened = {}; kvSet('currentSeq', seq); logVisit(type, { seq });
   renderPlan(); renderCard(); updateAppLinks();
   const p = S.planBySeq.get(seq); if (p && !S.follow) S.map.panTo([p.lat, p.lng]);
@@ -683,8 +684,8 @@ function renderCard() {
       h('div', { class: 'seq' }, `P${pad(p.seq, 3)}`),
       h('div', { class: 'name' }, p.name),
       days().length ? daySelect() : h('span'),
-      h('div', { class: 'sub', id: 'cardSub' }, subLine(p, st, done, recN)),
-      p.reason ? h('div', { class: 'sub' }, p.reason) : null),
+      h('div', { class: 'sub st', id: 'cardSub' }, subLine(p, st, done, recN)),
+      h('div', { class: 'sub rs' }, p.reason || ' ')),  // 줄 수 고정 : 지점마다 카드 높이가 바뀌어 버튼이 움직이지 않게 (v0.3.9)
     h('div', { class: 'row nav' },
       h('button', { class: 'b', onclick: doPrev }, '◀ 이전'),
       h('button', { class: 'b', onclick: () => doNext(true) }, '건너뛰기'),
@@ -720,14 +721,18 @@ function renderAppRow() {
   const apps = role === 'all' ? NAV_APPS : [role];
   row.classList.toggle('single', apps.length === 1);
   const firstUnopened = apps.find(a => !S.opened[a]);
+  // 이전 · 다음을 빨리 누르다 앱 버튼이 눌리지 않게 : 지점이 바뀐 직후 0.8초는 앱 버튼 잠금 (v0.3.9)
+  const wait = (S.navGuardUntil || 0) - Date.now();
+  row.classList.toggle('guard', wait > 0);
+  if (wait > 0) { clearTimeout(S.navGuardT); S.navGuardT = setTimeout(() => { const r = $('#appRow'); if (r) r.classList.remove('guard'); }, wait); }
   apps.forEach((a, i) => {
     const label = role === 'all' ? `${'①②③'[i]} ${APPS[a].label}` : `${APPS[a].label} 다시 열기`;
     const cls = 'b' + (S.opened[a] ? ' done' : (a === firstUnopened && role === 'all' ? ' next' : ''));
     const url = linkFor(a, p);
     if ((a === 'balady' || a === 'google' || (a === 'hudhud' && S.settings.hudhudMode === 'custom')) && url) {
-      row.append(h('a', { class: cls, href: url, 'data-app': a, rel: 'noopener', onclick: () => openApp(a, true) }, label));
+      row.append(h('a', { class: cls, href: url, 'data-app': a, rel: 'noopener', onclick: e => { if (Date.now() < (S.navGuardUntil || 0)) { e.preventDefault(); return; } openApp(a, true); } }, label));
     } else {
-      row.append(h('button', { class: cls, 'data-app': a, onclick: () => openApp(a) }, label));
+      row.append(h('button', { class: cls, 'data-app': a, onclick: () => { if (Date.now() < (S.navGuardUntil || 0)) return; openApp(a); } }, label));
     }
   });
 }
