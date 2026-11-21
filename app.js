@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.7';
+const APP_VERSION = '0.3.8';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -133,7 +133,7 @@ const S = {
   settings: { ...DEFAULT_SETTINGS }, pack: null, plan: [], planBySeq: new Map(), status: {}, currentSeq: null,
   records: [], gps: null, follow: true, tracking: false, track: null, wakeLock: null, deviceId: null,
   lastExportAt: null, opened: {}, map: null, L: {}, lastZip: null, dayFilter: null,
-  lastFixAt: null, trackKm: 0, trackLastSave: 0, markN: 0,
+  lastFixAt: null, trackKm: 0, trackLastSave: 0, markN: 0, trackPtsBase: 0, trackSegsToday: 0, lastTrackPt: null, gapKm: 0,
 };
 
 /* ---------- toast ---------- */
@@ -365,8 +365,11 @@ async function stopTrack() {
   S.tracking = false; if (S.track) { S.track.endedAt = nowIso(); await flushTrack(); }
   await kvSet('trackOn', false);
   try { if (S.wakeLock) await S.wakeLock.release(); } catch (e) { }
-  S.wakeLock = null; toast(`궤적 저장 · ${S.track ? S.track.pts.length : 0}점`);
-  if (S.track && S.track.pts.length) L.polyline(S.track.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+  S.wakeLock = null; toast(`궤적 저장 · 오늘 ${(S.trackPtsBase + (S.track ? S.track.pts.length : 0)).toLocaleString()}점`);
+  if (S.track && S.track.pts.length) {
+    L.polyline(S.track.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+    S.trackPtsBase += S.track.pts.length; S.trackSegsToday++; S.lastTrackPt = S.track.pts[S.track.pts.length - 1];
+  }
   S.track = null; S.L.track.setLatLngs([]); updateTrackBtn(); renderTrkBar();
 }
 function updateTrackBtn() {
@@ -381,12 +384,19 @@ async function rotateTrack() {
   const old = S.track; old.endedAt = nowIso(); await DB.put('tracks', old).catch(() => { });
   L.polyline(old.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
   const last = old.pts[old.pts.length - 1];
+  S.trackPtsBase += old.pts.length - 1; S.trackSegsToday++;  // 새 토막 첫 점은 앞 토막 끝점과 같음
   S.track = { id: uid('t_'), startedAt: nowIso(), endedAt: null, pts: [last], resumed: false, cont: old.id };
   S.L.track.setLatLngs([[last[1], last[0]]]);
 }
 function addTrackPoint(lat, lng, ts) {
   const t = S.track; if (!t) return;
   const last = t.pts[t.pts.length - 1];
+  if (!last && S.lastTrackPt) {
+    // 앱이 꺼졌다 켜져 새 토막이 시작될 때 : 끊긴 사이는 직선 거리로 더해 오늘 거리가 줄지 않게 (v0.3.8)
+    const g = km({ lat: S.lastTrackPt[1], lng: S.lastTrackPt[0] }, { lat, lng });
+    if (g < 30) { S.trackKm += g; S.gapKm += g; }
+    S.lastTrackPt = null;
+  }
   if (last) {
     const d = km({ lat: last[1], lng: last[0] }, { lat, lng }) * 1000;
     if (d < 12 && ts - last[3] < 10000) return;
@@ -420,14 +430,14 @@ function renderTrkBar() {
       navigator.geolocation.getCurrentPosition(p => { pokeBusy = false; onPos(p); }, () => { pokeBusy = false; }, { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 });
     }
   }
-  const n = S.track ? S.track.pts.length : 0;
+  const n = S.trackPtsBase + (S.track ? S.track.pts.length : 0);  // 오늘 전체 (앱이 다시 켜져도 이어서 셈, v0.3.8)
   if (age == null || age > 45000) {
     el.className = 'stale';
     el.textContent = `⚠ 궤적 끊김 · 마지막 위치 ${age == null ? '없음' : fmtAgo(age)} · 화면 켜기 · 위치 권한 확인`;
     if (now - staleAlertAt > 30000) { staleAlertAt = now; try { navigator.vibrate && navigator.vibrate([400, 150, 400]); } catch (e) { } beep(); }
   } else {
     el.className = 'on';
-    el.textContent = `● 기록 중 · ${n.toLocaleString()}점 · ${fmtAgo(age)} · ±${Math.round(S.gps.acc)} m · 오늘 ${S.trackKm.toFixed(1)} km`;
+    el.textContent = `● 기록 중 · 오늘 ${n.toLocaleString()}점 · ${S.trackKm.toFixed(1)} km · ${fmtAgo(age)} · ±${Math.round(S.gps.acc)} m`;
   }
 }
 
@@ -596,10 +606,16 @@ function doNext(skip) {
 }
 async function daySummary() {
   const today = new Date().toDateString();
-  const tr = (await DB.all('tracks')).filter(t => t.pts && t.pts.length && new Date(t.startedAt).toDateString() === today);
-  let kmSum = 0, n = 0, t0 = null, t1 = null;
+  const tr = (await DB.all('tracks')).filter(t => t.pts && t.pts.length && new Date(t.startedAt).toDateString() === today)
+    .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  let kmSum = 0, n = 0, t0 = null, t1 = null, gapKm = 0, gaps = 0, prevLast = null;
   for (const t of tr) {
-    n += t.pts.length;
+    n += t.pts.length - (t.cont ? 1 : 0);
+    if (prevLast && !t.cont) {
+      const g = km({ lat: prevLast[1], lng: prevLast[0] }, { lat: t.pts[0][1], lng: t.pts[0][0] });
+      if (g < 30) { kmSum += g; gapKm += g; } if (g > 0.3) gaps++;
+    }
+    prevLast = t.pts[t.pts.length - 1];
     for (let k = 0; k < t.pts.length; k++) {
       const q = t.pts[k]; const ts = q[3] || Date.parse(q[2]);
       if (t0 == null || ts < t0) t0 = ts; if (t1 == null || ts > t1) t1 = ts;
@@ -612,7 +628,7 @@ async function daySummary() {
   const visited = L.filter(x => (S.status[x.seq] || {}).visited).length, skipped = L.filter(x => (S.status[x.seq] || {}).skipped).length;
   const recs = S.records.filter(r => new Date(r.createdAt).toDateString() === today).length;
   const gpsRestarts = vs.filter(v => v.type === 'gps_restart').length;
-  return { km: kmSum, pts: n, segs: tr.length, t0, t1, marks, visited, skipped, total: L.length, recs, gpsRestarts, day: S.dayFilter };
+  return { km: kmSum, pts: n, segs: tr.length, gaps, gapKm, t0, t1, marks, visited, skipped, total: L.length, recs, gpsRestarts, day: S.dayFilter };
 }
 async function openDaySummary(justEnded) {
   const s = await daySummary();
@@ -623,6 +639,7 @@ async function openDaySummary(justEnded) {
     justEnded ? h('div', { style: 'font-weight:900;font-size:18px;margin-bottom:8px' }, '오늘 실사를 마감했습니다') : null,
     row('일자', s.day && s.day !== 'all' ? s.day : new Date().toLocaleDateString()),
     row('궤적', `${hmTs(s.t0)} ~ ${hmTs(s.t1)} (${Math.floor(dur / 60)}시간 ${dur % 60}분) · ${s.km.toFixed(1)} km · ${s.pts.toLocaleString()}점 · ${s.segs}토막`),
+    s.gaps ? row('끊긴 구간', `${s.gaps}곳 · 직선 ${s.gapKm.toFixed(1)} km 를 거리에 더함`) : null,
     row('계획 지점', `방문 ${s.visited} · 건너뜀 ${s.skipped} · 전체 ${s.total}`),
     row('★ 표시', `${s.marks}개`), row('앱 기록', `${s.recs}건`), row('GPS 다시 잡기', `${s.gpsRestarts}회`),
     h('div', { class: 'muted', style: 'margin-top:10px' }, '이제 내보내기(ZIP)를 만들어 정리 담당에게 보내 주세요. 사진 · 캡처 · 녹음은 원본으로 올려 주세요.'));
@@ -1123,11 +1140,16 @@ async function boot() {
   S.markN = (await kvGet('markN')) || 0; S.dayEnded = (await kvGet('dayEnded')) === new Date().toDateString();
   try {
     const today = new Date().toDateString();
-    const old = (await DB.all('tracks')).filter(t => t.pts && t.pts.length && new Date(t.startedAt).toDateString() === today);
+    const old = (await DB.all('tracks')).filter(t => t.pts && t.pts.length && new Date(t.startedAt).toDateString() === today)
+      .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+    let prevLast = null;
     for (const t of old) {
       L.polyline(t.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+      if (prevLast && !t.cont) { const g = km({ lat: prevLast[1], lng: prevLast[0] }, { lat: t.pts[0][1], lng: t.pts[0][0] }); if (g < 30) { S.trackKm += g; S.gapKm += g; } }
       for (let i = 1; i < t.pts.length; i++) { const a = t.pts[i - 1], b = t.pts[i]; const d = km({ lat: a[1], lng: a[0] }, { lat: b[1], lng: b[0] }); if (d < 5) S.trackKm += d; }
+      S.trackPtsBase += t.pts.length - (t.cont ? 1 : 0); prevLast = t.pts[t.pts.length - 1];
     }
+    S.trackSegsToday = old.length; S.lastTrackPt = prevLast;  // 다음 토막 첫 점과 이어 셈
     const vs = await DB.all('visits');
     vs.filter(v => v.type === 'mark_cancel').forEach(v => MARK_CANCELED.add(v.n));
     vs.filter(v => v.type === 'mark' && new Date(v.t).toDateString() === today && !MARK_CANCELED.has(v.n)).forEach(v => { MARKS_TODAY.add(v.n); if (v.lat != null) drawMark(v.n, v.lat, v.lng, v.t); });
