@@ -154,3 +154,7 @@ textarea { min-height: 84px; resize: vertical; }
   #btnMark { min-width: 64px; height: 64px; border-radius: 32px; font-size: 24px; bottom: 10px; left: calc(10px + env(safe-area-inset-left, 0px)); }
   #toast { bottom: 16px; left: 30%; }
 }
+
+.b.donebtn { background: #10261a; border-color: #2f7a4b; color: #e8fff0; font-weight: 900; }
+.b.donebtn.on { background: #e8fff0; color: #10261a; }
+.pm.done.fin::before { content: "✓✓"; }
