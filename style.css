@@ -167,3 +167,8 @@ textarea { min-height: 84px; resize: vertical; }
 .row.apps { margin-top: 10px; }
 .row.apps.guard .b { pointer-events: none; opacity: .5; }
 .row.apps .b, .row.nav .b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* v0.3.10 : 화면 전체 고정 (아이폰 주소창 · 툴바가 접혔다 펴지며 높이가 바뀌는 것 방지) */
+html, body { height: 100%; height: 100dvh; overflow: hidden; overscroll-behavior: none; touch-action: manipulation; }
+body { position: fixed; inset: 0; width: 100%; }
+#card { overscroll-behavior: contain; }

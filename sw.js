@@ -1,5 +1,5 @@
 /* 제다 실사 서비스워커 : 앱 셸은 캐시 우선, 지도 타일은 런타임 캐시(상한), data/ 는 캐시하지 않음 */
-const VERSION = 'v0.3.9';
+const VERSION = 'v0.3.10';
 const SHELL = `shell-${VERSION}`;
 const TILES = 'tiles-v1';
 const TILE_MAX = 4000;
@@ -10,7 +10,7 @@ const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest
 const TILE_HOSTS = ['tile.openstreetmap.org', 'server.arcgisonline.com'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(SHELL).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(SHELL).then(c => c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('shell-') && k !== SHELL).map(k => caches.delete(k))))

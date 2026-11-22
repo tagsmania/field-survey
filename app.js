@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.9';
+const APP_VERSION = '0.3.10';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -210,7 +210,8 @@ function initMap() {
   S.L.range = L.featureGroup().addTo(map);
   S.L.meshLbl = L.layerGroup();
   S.L.trackOld = L.layerGroup().addTo(map);
-  S.L.track = L.polyline([], { color: '#ff3b30', weight: 4, opacity: .85, dashArray: '8 6' }).addTo(map);
+  S.L.trackCase = L.polyline([], { color: '#ffffff', weight: 9, opacity: .95, interactive: false }).addTo(map);
+  S.L.track = L.polyline([], { color: '#0047ff', weight: 5, opacity: 1, interactive: false }).addTo(map);  // 지금 기록 중 : 흰 테두리 + 진한 파랑 실선 (v0.3.10, 색약 고려)
   S.L.marks = L.layerGroup().addTo(map);
   S.L.plan = L.layerGroup().addTo(map);
   S.L.rec = L.layerGroup().addTo(map);
@@ -305,6 +306,12 @@ function renderRecords() {
 }
 
 /* ---------- GPS & track ---------- */
+function oldTrackLine(pts) {  // 지난 토막 : 흰 테두리 + 파랑 실선 (조금 가늘게)
+  const ll = pts.map(q => [q[1], q[0]]);
+  L.polyline(ll, { color: '#ffffff', weight: 7, opacity: .9, interactive: false }).addTo(S.L.trackOld);
+  L.polyline(ll, { color: '#0047ff', weight: 3.5, opacity: .85, interactive: false }).addTo(S.L.trackOld);
+}
+function setTrackLine(ll) { S.L.track.setLatLngs(ll); if (S.L.trackCase) S.L.trackCase.setLatLngs(ll); }
 let meMarker = null, meCircle = null, gpsWatch = null, demoTimer = null;
 let gpsStartAt = 0, gpsErrN = 0;
 function startGPS() {
@@ -352,7 +359,7 @@ async function requestWake() {
 }
 async function startTrack(resumeGapMs) {
   S.tracking = true; S.track = { id: uid('t_'), startedAt: nowIso(), endedAt: null, pts: [], resumed: resumeGapMs != null };
-  S.trackLastSave = Date.now(); S.L.track.setLatLngs([]);
+  S.trackLastSave = Date.now(); setTrackLine([]);
   if (S.gps && S.lastFixAt && Date.now() - S.lastFixAt < 30000) addTrackPoint(S.gps.lat, S.gps.lng, Date.now());
   await kvSet('trackOn', true); await requestWake(); updateTrackBtn(); renderTrkBar();
 }
@@ -367,10 +374,10 @@ async function stopTrack() {
   try { if (S.wakeLock) await S.wakeLock.release(); } catch (e) { }
   S.wakeLock = null; toast(`궤적 저장 · 오늘 ${(S.trackPtsBase + (S.track ? S.track.pts.length : 0)).toLocaleString()}점`);
   if (S.track && S.track.pts.length) {
-    L.polyline(S.track.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+    oldTrackLine(S.track.pts);
     S.trackPtsBase += S.track.pts.length; S.trackSegsToday++; S.lastTrackPt = S.track.pts[S.track.pts.length - 1];
   }
-  S.track = null; S.L.track.setLatLngs([]); updateTrackBtn(); renderTrkBar();
+  S.track = null; setTrackLine([]); updateTrackBtn(); renderTrkBar();
 }
 function updateTrackBtn() {
   const b = $('#btnTrack'); b.setAttribute('aria-pressed', S.tracking); b.textContent = S.tracking ? '● 궤적 기록 중' : '궤적 꺼짐';
@@ -382,11 +389,11 @@ async function toggleTrack() {
 async function rotateTrack() {
   // 한 토막이 너무 커지지 않게 2,000점마다 새 토막으로 (저장 부담 줄임)
   const old = S.track; old.endedAt = nowIso(); await DB.put('tracks', old).catch(() => { });
-  L.polyline(old.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+  oldTrackLine(old.pts);
   const last = old.pts[old.pts.length - 1];
   S.trackPtsBase += old.pts.length - 1; S.trackSegsToday++;  // 새 토막 첫 점은 앞 토막 끝점과 같음
   S.track = { id: uid('t_'), startedAt: nowIso(), endedAt: null, pts: [last], resumed: false, cont: old.id };
-  S.L.track.setLatLngs([[last[1], last[0]]]);
+  setTrackLine([[last[1], last[0]]]);
 }
 function addTrackPoint(lat, lng, ts) {
   const t = S.track; if (!t) return;
@@ -403,7 +410,7 @@ function addTrackPoint(lat, lng, ts) {
     if (d < 5000) S.trackKm += d / 1000;
   }
   t.pts.push([+lng.toFixed(6), +lat.toFixed(6), new Date(ts).toISOString(), ts]);
-  S.L.track.addLatLng([lat, lng]);
+  S.L.track.addLatLng([lat, lng]); if (S.L.trackCase) S.L.trackCase.addLatLng([lat, lng]);
   if (t.pts.length >= 2000) { rotateTrack(); return; }
   if (Date.now() - S.trackLastSave > 15000) flushTrack();
 }
@@ -1109,8 +1116,26 @@ function openMenu() {
       if (prompt('지우려면 「지우기」 라고 입력') !== '지우기') return;
       await DB.clearAll(); location.reload();
     } }, '이 기기 데이터 모두 지우기'),
-    h('div', { class: 'muted', style: 'margin-top:8px' }, `앱 ${APP_VERSION} · 기기 ${S.deviceId} · 데이터는 이 기기에만 저장됩니다`)));
+    h('div', { class: 'muted', style: 'margin-top:8px' }, `앱 ${APP_VERSION} · 기기 ${S.deviceId} · 데이터는 이 기기에만 저장됩니다`),
+    h('button', { class: 'b small', style: 'margin-top:8px', onclick: checkUpdateNow }, '새 버전 확인 · 받기 (기록은 그대로)')));
   openSheet('설정', body, []);
+}
+
+/* ---------- 업데이트 (v0.3.10) ---------- */
+// 서버의 최신 버전을 직접 확인하고, 다르면 앱 화면 캐시만 비우고 다시 연다 (IndexedDB 기록 · 궤적 · 패키지는 그대로)
+async function checkUpdateNow() {
+  let latest = null;
+  try { const t = await (await fetch(`sw.js?t=${Date.now()}`, { cache: 'no-store' })).text(); const m = t.match(/VERSION = 'v([\d.]+)'/); latest = m && m[1]; } catch (e) { }
+  if (!latest) return toast('서버에 연결하지 못했습니다 · 인터넷 연결을 확인하세요', 4000);
+  if (latest === APP_VERSION) return toast(`최신 버전입니다 (v${APP_VERSION})`, 3000);
+  if (!confirm(`새 버전 v${latest} 이 있습니다 (지금 v${APP_VERSION}).\n받고 다시 열까요? 기록 · 궤적 · 패키지는 그대로 남습니다.`)) return;
+  await forceRefresh();
+}
+async function forceRefresh() {
+  try { await flushTrack(); } catch (e) { }
+  try { const regs = await navigator.serviceWorker.getRegistrations(); for (const r of regs) await r.unregister(); } catch (e) { }
+  try { for (const k of await caches.keys()) if (k.startsWith('shell-')) await caches.delete(k); } catch (e) { }
+  location.replace(location.pathname + '?v=' + Date.now());
 }
 
 /* ---------- boot ---------- */
@@ -1149,7 +1174,7 @@ async function boot() {
       .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
     let prevLast = null;
     for (const t of old) {
-      L.polyline(t.pts.map(q => [q[1], q[0]]), { color: '#ff3b30', weight: 3, opacity: .45 }).addTo(S.L.trackOld);
+      oldTrackLine(t.pts);
       if (prevLast && !t.cont) { const g = km({ lat: prevLast[1], lng: prevLast[0] }, { lat: t.pts[0][1], lng: t.pts[0][0] }); if (g < 30) { S.trackKm += g; S.gapKm += g; } }
       for (let i = 1; i < t.pts.length; i++) { const a = t.pts[i - 1], b = t.pts[i]; const d = km({ lat: a[1], lng: a[0] }, { lat: b[1], lng: b[0] }); if (d < 5) S.trackKm += d; }
       S.trackPtsBase += t.pts.length - (t.cont ? 1 : 0); prevLast = t.pts[t.pts.length - 1];
@@ -1201,8 +1226,15 @@ async function boot() {
     const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').then(reg => {
       reg.addEventListener('updatefound', () => { const w = reg.installing; if (!w) return; w.addEventListener('statechange', () => { if (w.state === 'activated' && hadController) $('#updBar').hidden = false; }); });
+      // 켜 둔 채로 오래 써도 새 버전을 받게 : 30분마다 · 다시 볼 때마다 확인 (v0.3.10)
+      const chk = () => { try { reg.update(); } catch (e) { } };
+      setInterval(chk, 30 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') chk(); });
     }).catch(e => console.warn('sw', e));
     $('#updReload').onclick = () => location.reload();
+    // 새 서비스워커가 넘겨받으면 한 번 자동으로 다시 열기 (v0.3.10)
+    let swReloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !swReloaded) { swReloaded = true; flushTrack().finally(() => location.reload()); } });
   }
   if (DEMO && !pack) {
     try { const r = await fetch(`data/${QS.get('pack') || 'sample_pack.json'}`, { cache: 'no-store' }); if (r.ok) { await installPack(parsePack(await r.json()), true); await setDayFilter(QS.get('day') || autoDay()); } } catch (e) { console.warn('demo pack', e); }
