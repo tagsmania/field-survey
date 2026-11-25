@@ -1,6 +1,6 @@
 'use strict';
 /* 현장 실사 PWA · 데이터는 이 기기 IndexedDB 에만 저장하고 서버로 보내지 않음 */
-const APP_VERSION = '0.3.10';
+const APP_VERSION = '0.3.11';
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.get('demo') === '1';
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -240,6 +240,8 @@ function renderRange() {
   S.L.range.clearLayers(); S.L.meshLbl.clearLayers();
   const rng = S.pack && S.pack.range; if (!rng) return;
   const isLine = f => /LineString/.test((f && f.geometry && f.geometry.type) || '');
+  const gfs = (rng.features || []).filter(f => f.properties && f.properties.grid && !isLine(f));
+  const gridB = gfs.length ? L.geoJSON({ type: 'FeatureCollection', features: gfs }).getBounds() : null;  // 테스트 그리드 묶음 범위 (v0.3.11)
   L.geoJSON(rng, {
     style: f => {
       const p = (f && f.properties) || {};
@@ -248,6 +250,7 @@ function renderRange() {
         if (p.kind === 'added') return { color: '#5E3C99', weight: 4, opacity: .85, dashArray: '8 6' };
         return { color: '#E66101', weight: 6, opacity: p.skip ? .5 : .9 };
       }
+      if (p.grid) return { color: '#C4500A', weight: 3, opacity: .95, fillColor: '#E66101', fillOpacity: .06 };  // 테스트 그리드 (v0.3.11)
       return { color: '#1f2937', weight: 1, opacity: .7, fillColor: '#4da3ff', fillOpacity: .05 };
     },
     onEachFeature: (f, layer) => {
@@ -256,6 +259,15 @@ function renderRange() {
         if (p.kind === 'route') return;
         const meta = [p.priority, p.tier, p.cycle, p.role].filter(Boolean).map(escH).join(' · ');
         layer.bindPopup(`<b>${escH(p.name)}</b><br>${meta}${p.seq ? `<br>경유 ${escH(p.seq)}번부터 · 예상 ${escH(p.eta || '')}` : ''}${p.skip ? '<br>시간 부족 시 생략 가능' : ''}`);
+        return;
+      }
+      if (p.grid) {  // 테스트 그리드 : 이름 라벨 + 도로 길이 (v0.3.11)
+        layer.bindPopup(`<b>${escH(p.grid)} · 메시 ${escH(p.mesh ?? '')}</b><br>도로 ${p['전체'] ?? '-'} km (주요 ${p['주요도로'] ?? '-'} · 레지덴셜 ${p['레지덴셜'] ?? '-'})`);
+        const b = layer.getBounds(), c = b.getCenter(), U = gridB || b, uc = U.getCenter();
+        const north = c.lat >= uc.lat, west = c.lng <= uc.lng;  // 그리드 묶음 바깥쪽 모서리 밖에 이름표 (지점 번호를 가리지 않게)
+        const at = L.latLng(north ? b.getNorth() : b.getSouth(), west ? b.getWest() : b.getEast());
+        const html = `<div class="gridlbl" style="transform:translate(${west ? '0' : '-100%'},${north ? '-100%' : '0'}) translate(${west ? 2 : -2}px,${north ? -3 : 3}px)">${escH(p.grid)}</div>`;
+        L.marker(at, { interactive: false, icon: L.divIcon({ className: '', html, iconSize: [0, 0], iconAnchor: [0, 0] }) }).addTo(S.L.range);  // 줌과 상관없이 늘 보이게
         return;
       }
       layer.bindPopup(`<b>메시 ${p.mesh ?? ''}</b><br>조사 ${p['조사일정'] || '미정'} · 구축 ${p['구축일정'] || '미정'}<br>도로 ${p['전체'] ?? '-'} km (주요 ${p['주요도로'] ?? '-'} · 레지덴셜 ${p['레지덴셜'] ?? '-'})`);
